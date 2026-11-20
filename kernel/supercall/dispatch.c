@@ -31,6 +31,7 @@ static int do_grant_root(void __user *arg)
 static int do_get_info(void __user *arg)
 {
 	struct ksu_get_info_cmd cmd = { .version = ksu_get_manager_version(), .flags = 0 };
+	cmd.uapi_version = ksu_get_manager_uapi_version();
 
 #ifdef MODULE
 	cmd.flags |= KSU_GET_INFO_FLAG_LKM;
@@ -43,7 +44,8 @@ static int do_get_info(void __user *arg)
 		cmd.flags |= KSU_GET_INFO_FLAG_MANAGER;
 	}
 #ifndef KSU_NO_PREINIT
-	cmd.flags |= KSU_GET_INFO_FLAG_PREINIT;
+	if (cmd.uapi_version >= 6)
+		cmd.flags |= KSU_GET_INFO_FLAG_PREINIT;
 #endif
 #ifdef CONFIG_KSU_HOOK_SUSFS_INLINE
 	cmd.flags |= KSU_GET_INFO_FLAG_HOOK_SUSFS_INLINE;
@@ -52,7 +54,6 @@ static int do_get_info(void __user *arg)
 #endif
 	cmd.flags |= KSU_GET_INFO_FLAG_HOOK_READY;
 	cmd.features = KSU_FEATURE_MAX;
-	cmd.uapi_version = KERNEL_SU_UAPI_VERSION;
 
 	if (ksuver_override)
 		cmd.version = ksuver_override;
@@ -118,6 +119,7 @@ static int do_report_event(void __user *arg)
 		if (!boot_complete_lock) {
 			boot_complete_lock = true;
 			pr_info("boot_complete triggered\n");
+			on_post_fs_data();
 			on_boot_completed();
 #ifdef CONFIG_KSU_SUSFS
         	susfs_start_sdcard_monitor_fn();

@@ -295,7 +295,7 @@ module_param_cb(ksu_debug_manager_appid, &expected_size_ops, &ksu_debug_manager_
 int get_pkg_from_apk_dir_path(char *pkg, const char *path)
 {
 	int len = strlen(path);
-	if (len >= KSU_MAX_PACKAGE_NAME || len < 1)
+	if (len < 1)
 		return -1;
 
 	const char *last_slash = strrchr(path, '/');
@@ -405,6 +405,18 @@ enum ksu_manager_type ksu_detect_manager_apk(char *path)
 void ksu_set_manager_type(enum ksu_manager_type type)
 {
 	WRITE_ONCE(detected_manager, type);
+}
+
+u32 ksu_get_manager_uapi_version(void)
+{
+	/* Next v3.4.2 uses the unchanged UAPI-5 ioctl/profile layouts.
+	 * Expose that supported subset to its manager and companion ksud;
+	 * keep UAPI 6 for the native manager. GET_INFO gates UAPI-6 flags.
+	 */
+	if (READ_ONCE(detected_manager) == KSU_MANAGER_KSUN)
+		return 5;
+
+	return KERNEL_SU_UAPI_VERSION;
 }
 
 u32 ksu_get_manager_version(void)

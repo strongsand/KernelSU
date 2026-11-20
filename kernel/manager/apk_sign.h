@@ -17,6 +17,7 @@ bool is_manager_apk(char *path);
 enum ksu_manager_type ksu_detect_manager_apk(char *path);
 void ksu_set_manager_type(enum ksu_manager_type type);
 u32 ksu_get_manager_version(void);
+u32 ksu_get_manager_uapi_version(void);
 const char *ksu_get_manager_version_tag(void);
 const char *ksu_get_manager_version_full(void);
 int get_pkg_from_apk_dir_path(char *pkg, const char *path);

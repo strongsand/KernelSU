@@ -36,18 +36,32 @@ struct uid_data {
 	char package[KSU_MAX_PACKAGE_NAME];
 };
 
-static void crown_manager(const char *apk, struct list_head *uid_data)
+static bool crown_manager(const char *apk, struct list_head *uid_data)
 {
 	struct list_head *list = (struct list_head *)uid_data;
 	struct uid_data *np;
+	char directory[DATA_PATH_LEN];
+	char package[KSU_MAX_PACKAGE_NAME];
+	char *slash;
+
+	if (strscpy(directory, apk, sizeof(directory)) < 0)
+		return false;
+	slash = strrchr(directory, '/');
+	if (!slash || strcmp(slash, "/base.apk"))
+		return false;
+	*slash = '\0';
+	if (get_pkg_from_apk_dir_path(package, directory) < 0)
+		return false;
 
 	list_for_each_entry (np, list, list) {
-		if (test_extra_pkgs(np->package) || strncmp(np->package, KSU_PACKAGE_NAME, KSU_MAX_PACKAGE_NAME) == 0) {
+		/* Bind the UID of the APK whose signature actually passed. */
+		if (!strcmp(np->package, package)) {
 			pr_info("Crowning manager: uid=%d\n", np->uid);
 			ksu_set_manager_appid(np->uid);
-			break;
+			return true;
 		}
 	}
+	return false;
 }
 
 struct data_path {
@@ -61,6 +75,7 @@ struct my_dir_context {
 	struct list_head *data_path_list;
 	char *parent_dir;
 	void *private_data;
+	const char *wanted_package;
 	int depth;
 };
 // https://docs.kernel.org/filesystems/porting.html
@@ -75,7 +90,7 @@ struct my_dir_context {
 #define FILLDIR_ACTOR_STOP -EINVAL
 #endif
 
-static bool maybe_manager_apk_dir(const char *path)
+static bool maybe_manager_apk_dir(const char *path, const char *wanted_package)
 {
 	_Static_assert(sizeof(KSU_PACKAGE_NAME) < KSU_MAX_PACKAGE_NAME, "KSU_PACKAGE_NAME too long!");
 	char pkg[KSU_MAX_PACKAGE_NAME];
@@ -83,6 +98,8 @@ static bool maybe_manager_apk_dir(const char *path)
 		pr_err("Failed to get package name from apk dir path: %s\n", path);
 		return false;
 	}
+	if (strcmp(pkg, wanted_package))
+		return false;
 
 	if (test_extra_pkgs(pkg))
 		return true;
@@ -140,7 +157,7 @@ static FILLDIR_RETURN_TYPE my_actor(MY_ACTOR_CTX_ARG, const char *name, int name
 
 	// now put this on candidate_path
 	if (d_type == DT_REG && namelen == 8 && !memcmp(name, "base.apk", 8)) {
-		if (maybe_manager_apk_dir(my_ctx->parent_dir)) {
+		if (maybe_manager_apk_dir(my_ctx->parent_dir, my_ctx->wanted_package)) {
 			snprintf(candidate_path, DATA_PATH_LEN, "%s/%.*s", my_ctx->parent_dir, namelen, name);
 			strcpy(cached_manager_apk_path, candidate_path);
 		}
@@ -158,7 +175,8 @@ static FILLDIR_RETURN_TYPE my_actor(MY_ACTOR_CTX_ARG, const char *name, int name
 #define ksu_get_magic(x) ((x)->f_path.dentry->d_inode->i_sb->s_magic)
 #endif
 
-static noinline void search_manager(const char *path, int depth, struct list_head *uid_data)
+static noinline void search_manager(const char *path, int depth, struct list_head *uid_data,
+				   const char *wanted_package)
 {
 	int i, stop = 0;
 	struct list_head data_path_list;
@@ -187,6 +205,7 @@ static noinline void search_manager(const char *path, int depth, struct list_hea
 							.data_path_list = &data_path_list,
 							.parent_dir = pos->dirpath,
 							.private_data = candidate_path,
+							.wanted_package = wanted_package,
 							.depth = pos->depth };
 			struct file *file = ksu_filp_open_nonotify(pos->dirpath, O_RDONLY | O_NOFOLLOW | O_NOATIME | O_DIRECTORY);
 			if (IS_ERR(file)) {
@@ -217,17 +236,21 @@ static noinline void search_manager(const char *path, int depth, struct list_hea
 			if (!candidate_path[0])
 				goto skip_iterate;
 
-			// As soon as we get the manager apk path, we can stop
-			stop = 1;
-
 			bool is_manager = is_manager_apk(candidate_path);
 			pr_info("Found manager base.apk at path: %s, is_manager: %d\n", candidate_path, is_manager);
 
 			// Only crown if signature verification pass
-			if (unlikely(!is_manager))
+			if (unlikely(!is_manager)) {
+				candidate_path[0] = 0;
+				cached_manager_apk_path[0] = 0;
 				goto skip_iterate;
+			}
 
-			crown_manager(candidate_path, uid_data);
+			stop = crown_manager(candidate_path, uid_data);
+			if (!stop) {
+				candidate_path[0] = 0;
+				cached_manager_apk_path[0] = 0;
+			}
 
 		skip_iterate:
 			list_del(&pos->list);
@@ -319,11 +342,21 @@ static void throne_tracker_fn(bool prune_only)
 
 	// first, check if manager_uid exist!
 	uid_t manager_package_uid = KSU_INVALID_APPID;
+	const char *wanted_package = NULL;
 	bool need_rescan = false;
 	list_for_each_entry (np, &uid_list, list) {
-		if (test_extra_pkgs(np->package) || strcmp(np->package, KSU_PACKAGE_NAME) == 0) {
+		/* This variant targets the signed Next stable manager. Prefer it
+		 * when another supported manager is still installed.
+		 */
+		if (!strcmp(np->package, "com.rifsxd.ksunext")) {
 			manager_package_uid = np->uid;
+			wanted_package = np->package;
 			break;
+		}
+		if (!wanted_package && (test_extra_pkgs(np->package) ||
+		    !strcmp(np->package, KSU_PACKAGE_NAME))) {
+			manager_package_uid = np->uid;
+			wanted_package = np->package;
 		}
 	}
 
@@ -337,7 +370,7 @@ static void throne_tracker_fn(bool prune_only)
 	} else {
 		if (!ksu_is_manager_appid_valid()) {
 			need_rescan = true;
-		} else if (unlikely(np->uid != ksu_get_manager_appid())) {
+		} else if (unlikely(manager_package_uid != ksu_get_manager_appid())) {
 			// this should not happen in normal android system
 			pr_info("manager uid changed, invalidate it!\n");
 			cached_manager_apk_path[0] = 0;
@@ -364,7 +397,7 @@ static void throne_tracker_fn(bool prune_only)
 			}
 		}
 		pr_info("Searching manager " KSU_PACKAGE_NAME "...\n");
-		search_manager("/data/app", 2, &uid_list);
+		search_manager("/data/app", 2, &uid_list, wanted_package);
 		pr_info("Search manager finished\n");
 	}
 
