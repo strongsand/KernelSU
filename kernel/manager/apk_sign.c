@@ -410,10 +410,13 @@ void ksu_set_manager_type(enum ksu_manager_type type)
 u32 ksu_get_manager_uapi_version(void)
 {
 	/* Next v3.4.2 uses the unchanged UAPI-5 ioctl/profile layouts.
-	 * Expose that supported subset to its manager and companion ksud;
-	 * keep UAPI 6 for the native manager. GET_INFO gates UAPI-6 flags.
+	 * Expose UAPI 5 before throne_tracker runs (KSU_MANAGER_UNKNOWN) so
+	 * early-boot ksud post-fs-data/services mount modules reliably,
+	 * and keep UAPI 5 when KernelSU Next is detected.
 	 */
-	if (READ_ONCE(detected_manager) == KSU_MANAGER_KSUN)
+	enum ksu_manager_type type = READ_ONCE(detected_manager);
+
+	if (type == KSU_MANAGER_KSUN || type == KSU_MANAGER_UNKNOWN)
 		return 5;
 
 	return KERNEL_SU_UAPI_VERSION;
